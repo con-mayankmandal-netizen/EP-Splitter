@@ -1078,5 +1078,161 @@ function trigger(url, name) {
 // Init
 setPage(1);
 </script>
+
+<!-- ── Need Help Button ── -->
+<style>
+.help-btn {
+  position: fixed;
+  bottom: 28px;
+  right: 28px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px;
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  border-radius: 99px;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  z-index: 999;
+  transition: all 0.2s;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+}
+.help-btn:hover { background: var(--bg4); border-color: var(--accent); transform: translateY(-2px); }
+.help-dot { width: 8px; height: 8px; background: #34d399; border-radius: 50%; flex-shrink: 0; animation: pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.6;transform:scale(1.2)} }
+
+.help-card {
+  position: fixed;
+  bottom: 88px;
+  right: 28px;
+  width: 300px;
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  padding: 20px;
+  z-index: 998;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+  display: none;
+  animation: slideUp 0.2s ease;
+}
+@keyframes slideUp { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+.help-card.open { display: block; }
+
+.help-avatar {
+  width: 48px; height: 48px;
+  background: linear-gradient(135deg, #b8860b, #8b6914);
+  border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; font-weight: 700;
+  color: #f5c842;
+  flex-shrink: 0;
+  position: relative;
+}
+.help-avatar::after {
+  content: '';
+  position: absolute;
+  bottom: 2px; right: 2px;
+  width: 10px; height: 10px;
+  background: #34d399;
+  border-radius: 50%;
+  border: 2px solid var(--bg2);
+}
+.help-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.help-name { font-size: 16px; font-weight: 600; }
+.help-sub { font-size: 12px; color: var(--text2); margin-top: 2px; }
+.help-divider { height: 1px; background: var(--border); margin: 14px 0; }
+.help-contact {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  color: var(--text);
+  font-size: 13px;
+  transition: all 0.15s;
+  margin-bottom: 8px;
+}
+.help-contact:last-child { margin-bottom: 0; }
+.help-contact:hover { background: var(--bg4); border-color: var(--border2); }
+.help-contact-icon {
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.help-contact-label { font-size: 11px; color: var(--text2); }
+.help-contact-val { font-size: 13px; font-weight: 500; }
+.help-close {
+  position: absolute; top: 12px; right: 12px;
+  width: 24px; height: 24px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text2);
+  transition: all 0.15s;
+}
+.help-close:hover { background: var(--bg4); color: var(--text); }
+</style>
+
+<!-- Help Card -->
+<div class="help-card" id="help-card">
+  <div class="help-close" onclick="toggleHelp()">✕</div>
+  <div class="help-header">
+    <div class="help-avatar">MM</div>
+    <div>
+      <div class="help-name">Mayank Mandal</div>
+      <div class="help-sub">Need help? Contact me</div>
+    </div>
+  </div>
+  <div class="help-divider"></div>
+  <a class="help-contact" href="mailto:con-mayank.mandal@pocketfm.com">
+    <div class="help-contact-icon" style="background:rgba(124,111,255,0.12)">✉️</div>
+    <div>
+      <div class="help-contact-label">EMAIL</div>
+      <div class="help-contact-val">con-mayank.mandal@pocketfm.com</div>
+    </div>
+  </a>
+  <a class="help-contact" href="https://pocket-fm.slack.com/team/U08NHRDM9M2" target="_blank">
+    <div class="help-contact-icon" style="background:rgba(52,211,153,0.1)">💬</div>
+    <div>
+      <div class="help-contact-label">SLACK</div>
+      <div class="help-contact-val">Message on Slack</div>
+      <div class="help-contact-label" style="margin-top:2px">DMs are open — fastest way to reach</div>
+    </div>
+  </a>
+</div>
+
+<!-- Help Button -->
+<button class="help-btn" onclick="toggleHelp()">
+  <div class="help-dot"></div>
+  Need help?
+</button>
+
+<!-- Made By Credit -->
+<div style="position:fixed;bottom:34px;left:50%;transform:translateX(-50%);font-size:12px;color:var(--text3);font-family:var(--font);display:flex;align-items:center;gap:6px;pointer-events:none;white-space:nowrap;">
+  Made with <span style="color:#f87171;font-size:13px">♥</span> by <span style="color:var(--text2);font-weight:500">Mayank Mandal</span>
+</div>
+
+<script>
+function toggleHelp() {
+  document.getElementById('help-card').classList.toggle('open');
+}
+document.addEventListener('click', function(e) {
+  const card = document.getElementById('help-card');
+  const btn = document.querySelector('.help-btn');
+  if (!card.contains(e.target) && !btn.contains(e.target)) {
+    card.classList.remove('open');
+  }
+});
+</script>
 </body>
 </html>
