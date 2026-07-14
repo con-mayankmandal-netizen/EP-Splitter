@@ -26,8 +26,14 @@ Ep 3 - An Unhappy Reunion
 EpSplit automatically:
 1. **Detects** all episode boundaries using configurable regex patterns
 2. **Analyses** episode count, word counts, first/last episodes
-3. **Splits** the document into multiple `.docx` files using your chosen batch size
+3. **Splits** the document into multiple `.docx` files using your chosen batch size without rebuilding its content
 4. **Downloads** everything as a single `Split_Document.zip`
+
+When numbered Word heading styles are present, EpSplit uses them as the primary
+chapter boundaries and ignores repeated running titles and chapter-summary table
+rows. Front matter is retained in the first output and trailing material is
+retained in the final output, so a complete split does not discard source body
+content.
 
 ---
 
@@ -212,7 +218,9 @@ Then enable GitHub Pages in your repo settings → Pages → Deploy from `gh-pag
 | Bold / Italic / Underline | ✅ Preserved |
 | Font size & name | ✅ Preserved |
 | Text alignment | ✅ Preserved |
-| Images (client-side) | ✅ Preserved (via XML clone) |
+| Images | ✅ Preserved (via XML/package clone) |
+| Tables and drawings | ✅ Preserved (via XML clone) |
+| Front / trailing matter | ✅ Preserved in first / last output |
 
 ---
 
