@@ -627,10 +627,10 @@ let S = {
 
 // ─── Episode detection (mirrors Python backend) ───────────────
 const PATTERNS = [
-  /^Ep\s+(\d+)\s*[-–—]\s*(.+)$/i,
-  /^Episode\s+(\d+)\s*[-–—]?\s*(.*)$/i,
-  /^Chapter\s+(\d+)\s*[-–—]?\s*(.*)$/i,
-  /^Part\s+(\d+)\s*[-–—]?\s*(.*)$/i,
+  /^Ep\s+(\d+)(?:\s*[:\-–—]\s*(.*))?$/i,
+  /^Episode\s+(\d+)(?:\s*[:\-–—]\s*(.*))?$/i,
+  /^Chapter\s+(\d+)(?:\s*[:\-–—]\s*(.*))?$/i,
+  /^Part\s+(\d+)(?:\s*[:\-–—]\s*(.*))?$/i,
 ];
 
 function detectEpisode(text) {
@@ -640,6 +640,25 @@ function detectEpisode(text) {
     if (m) return { number: parseInt(m[1]), title: (m[2] || '').trim(), heading: text };
   }
   return null;
+}
+
+function detectHeadingEpisode(text) {
+  text = text.trim();
+  const m = text.match(/^(?:Ep|Episode|Chapter|Part)\s+(\d+)(?:\s*[:\-–—]\s*|\s+)?(.*)$/i);
+  return m ? { number: parseInt(m[1]), title: (m[2] || '').trim(), heading: text } : null;
+}
+
+function elementText(element, W) {
+  return Array.from(element.getElementsByTagNameNS(W, 't'))
+    .map(t => t.textContent || '').join('');
+}
+
+function isHeadingParagraph(paragraph, W) {
+  const style = paragraph.getElementsByTagNameNS(W, 'pStyle')[0];
+  if (!style) return false;
+  const styleId = style.getAttributeNS(W, 'val') ||
+    style.getAttribute('w:val') || style.getAttribute('val') || '';
+  return /^Heading[1-6]$/i.test(styleId);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────
@@ -758,26 +777,52 @@ async function analyseClientSide() {
   const xml = parser.parseFromString(docXml, 'text/xml');
   const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 
-  // Extract paragraph texts
-  const paras = Array.from(xml.getElementsByTagNameNS(W, 'p'));
-  const texts = paras.map(p => {
-    return Array.from(p.getElementsByTagNameNS(W, 't'))
-      .map(t => t.textContent).join('');
+  const body = xml.getElementsByTagNameNS(W, 'body')[0];
+  if (!body) throw new Error('Invalid DOCX: document body is missing.');
+  const children = Array.from(body.children);
+
+  // Only direct body paragraphs can be boundaries. This deliberately excludes
+  // table-cell paragraphs such as chapter-summary rows.
+  const candidates = [];
+  children.forEach((child, bodyIdx) => {
+    if (child.localName !== 'p') return;
+    const isHeading = isHeadingParagraph(child, W);
+    const text = elementText(child, W);
+    const ep = isHeading ? detectHeadingEpisode(text) : detectEpisode(text);
+    if (ep) candidates.push({ ...ep, boundary_idx: bodyIdx, is_heading: isHeading });
   });
 
-  // Detect episodes
-  const episodes = [];
-  let current = null;
-  for (let i = 0; i < texts.length; i++) {
-    const ep = detectEpisode(texts[i]);
-    if (ep) {
-      if (current) { current.end_idx = i - 1; episodes.push(current); }
-      current = { ...ep, start_idx: i, end_idx: null, word_count: 0 };
-    } else if (current) {
-      current.word_count += texts[i].trim().split(/\s+/).filter(Boolean).length;
-    }
+  // Prefer Word heading styles when present, then deduplicate repeated chapter
+  // numbers. Running titles inside a chapter remain ordinary content.
+  const headingCandidates = candidates.filter(c => c.is_heading);
+  const selected = headingCandidates.length ? headingCandidates : candidates;
+  const boundaries = [];
+  const seenNumbers = new Set();
+  for (const candidate of selected) {
+    if (seenNumbers.has(candidate.number)) continue;
+    seenNumbers.add(candidate.number);
+    boundaries.push(candidate);
   }
-  if (current) { current.end_idx = texts.length - 1; episodes.push(current); }
+
+  let lastContentIdx = -1;
+  for (let i = children.length - 1; i >= 0; i--) {
+    if (children[i].localName !== 'sectPr') { lastContentIdx = i; break; }
+  }
+
+  const episodes = boundaries.map((boundary, i) => {
+    // Attach front matter to the first chapter and trailing material to the
+    // final chapter so a complete split never drops source content.
+    const startIdx = i === 0 ? 0 : boundary.boundary_idx;
+    const endIdx = i + 1 < boundaries.length
+      ? boundaries[i + 1].boundary_idx - 1
+      : lastContentIdx;
+    let wordCount = 0;
+    for (let j = startIdx; j <= endIdx; j++) {
+      if (children[j].localName === 'sectPr') continue;
+      wordCount += elementText(children[j], W).trim().split(/\s+/).filter(Boolean).length;
+    }
+    return { ...boundary, start_idx: startIdx, end_idx: endIdx, word_count: wordCount };
+  });
 
   if (episodes.length === 0) {
     throw new Error("No episodes detected. Make sure headings match: Ep 1 - Title, Chapter 1 - Title, etc.");
@@ -794,7 +839,6 @@ async function analyseClientSide() {
   };
   S.jobId = 'local-' + Date.now();
   S.xmlDoc = xml;
-  S.paraTexts = texts;
   S.zip = zip;
 }
 
@@ -989,14 +1033,26 @@ async function splitClientSide(groups) {
     // Clone the XML doc and trim to [pStart, pEnd]
     const xmlDoc = parser.parseFromString(docXmlStr, 'text/xml');
     const body = xmlDoc.getElementsByTagNameNS(W, 'body')[0];
-    const children = Array.from(body.childNodes);
+    const children = Array.from(body.children);
 
-    // Remove paragraphs outside range (keep sectPr if present at end)
-    const lastSectPr = children.find(c => c.nodeName === 'w:sectPr');
+    const expectedNodes = children.filter((c, i) =>
+      c.localName !== 'sectPr' && i >= pStart && i <= pEnd
+    );
+    const expectedXml = expectedNodes.map(c => serializer.serializeToString(c)).join('');
+
+    // Remove body elements outside range (keep sectPr if present at end)
     children.forEach((c, i) => {
-      if (c.nodeName === 'w:sectPr') return; // always keep
+      if (c.localName === 'sectPr') return; // always keep
       if (i < pStart || i > pEnd) body.removeChild(c);
     });
+
+    // Verify that every selected body element survived unchanged before the
+    // DOCX is packaged. Abort instead of offering an incomplete output.
+    const keptNodes = Array.from(body.children).filter(c => c.localName !== 'sectPr');
+    const keptXml = keptNodes.map(c => serializer.serializeToString(c)).join('');
+    if (keptNodes.length !== expectedNodes.length || keptXml !== expectedXml) {
+      throw new Error(`Integrity check failed while building ${fname}. No file was generated.`);
+    }
 
     const newXmlStr = serializer.serializeToString(xmlDoc);
 

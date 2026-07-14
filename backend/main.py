@@ -21,6 +21,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from docx import Document
+from docx.oxml.ns import qn
+from docx.text.paragraph import Paragraph
 
 # ─────────────────────────────────────────────────────────────
 # App setup
@@ -49,11 +51,15 @@ JOBS: dict[str, dict] = {}
 # Episode detection — add new patterns here, order = priority
 # ─────────────────────────────────────────────────────────────
 EPISODE_PATTERNS: list[re.Pattern] = [
-    re.compile(r"^Ep\s+(\d+)\s*[-–—]\s*(.+)$", re.IGNORECASE),
-    re.compile(r"^Episode\s+(\d+)\s*[-–—]?\s*(.*)$", re.IGNORECASE),
-    re.compile(r"^Chapter\s+(\d+)\s*[-–—]?\s*(.*)$", re.IGNORECASE),
-    re.compile(r"^Part\s+(\d+)\s*[-–—]?\s*(.*)$", re.IGNORECASE),
+    re.compile(r"^Ep\s+(\d+)(?:\s*[:\-–—]\s*(.*))?$", re.IGNORECASE),
+    re.compile(r"^Episode\s+(\d+)(?:\s*[:\-–—]\s*(.*))?$", re.IGNORECASE),
+    re.compile(r"^Chapter\s+(\d+)(?:\s*[:\-–—]\s*(.*))?$", re.IGNORECASE),
+    re.compile(r"^Part\s+(\d+)(?:\s*[:\-–—]\s*(.*))?$", re.IGNORECASE),
 ]
+HEADING_EPISODE_PATTERN = re.compile(
+    r"^(?:Ep|Episode|Chapter|Part)\s+(\d+)(?:\s*[:\-–—]\s*|\s+)?(.*)$",
+    re.IGNORECASE,
+)
 
 
 def detect_episode(text: str) -> Optional[dict]:
@@ -62,12 +68,36 @@ def detect_episode(text: str) -> Optional[dict]:
     for pat in EPISODE_PATTERNS:
         m = pat.match(text)
         if m:
+            title = m.group(2) if len(m.groups()) > 1 and m.group(2) else ""
             return {
                 "number": int(m.group(1)),
-                "title": m.group(2).strip() if len(m.groups()) > 1 else "",
+                "title": title.strip(),
                 "heading": text,
             }
     return None
+
+
+def detect_heading_episode(text: str) -> Optional[dict]:
+    """Detect a numbered episode in an explicit Word heading paragraph."""
+    text = text.strip()
+    match = HEADING_EPISODE_PATTERN.match(text)
+    if not match:
+        return None
+    return {
+        "number": int(match.group(1)),
+        "title": (match.group(2) or "").strip(),
+        "heading": text,
+    }
+
+
+def is_heading_style(style_id: str) -> bool:
+    """Return True for Word's built-in numbered heading styles."""
+    return bool(re.fullmatch(r"Heading[1-6]", style_id or "", re.IGNORECASE))
+
+
+def body_child_text(child) -> str:
+    """Extract visible text from one direct document-body child."""
+    return "".join(node.text or "" for node in child.iter(qn("w:t")))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -75,23 +105,63 @@ def detect_episode(text: str) -> Optional[dict]:
 # ─────────────────────────────────────────────────────────────
 def analyse_docx(doc_path: str) -> dict:
     doc = Document(doc_path)
-    paras = doc.paragraphs
+    body = doc.element.body
+    children = list(body.iterchildren())
+    candidates: list[dict] = []
+
+    # Only direct body paragraphs can be chapter boundaries. Paragraphs nested
+    # inside tables are document content, not structural chapter markers.
+    for body_idx, child in enumerate(children):
+        if child.tag != qn("w:p"):
+            continue
+        para = Paragraph(child, doc)
+        style_id = para.style.style_id if para.style is not None else ""
+        ep = detect_heading_episode(para.text) if is_heading_style(style_id) else detect_episode(para.text)
+        if not ep:
+            continue
+        candidates.append({**ep, "boundary_idx": body_idx, "style_id": style_id})
+
+    # Prefer explicit Word headings when the document supplies them. Otherwise
+    # use strict, punctuation-aware text matches. Keep the first occurrence of
+    # each number so repeated running titles cannot split a chapter again.
+    heading_candidates = [c for c in candidates if is_heading_style(c["style_id"])]
+    selected = heading_candidates or candidates
+    boundaries: list[dict] = []
+    seen_numbers: set[int] = set()
+    for candidate in selected:
+        if candidate["number"] in seen_numbers:
+            continue
+        seen_numbers.add(candidate["number"])
+        boundaries.append(candidate)
+
     episodes: list[dict] = []
-    current: Optional[dict] = None
+    content_indices = [i for i, child in enumerate(children) if child.tag != qn("w:sectPr")]
+    last_content_idx = content_indices[-1] if content_indices else -1
 
-    for i, para in enumerate(paras):
-        ep = detect_episode(para.text)
-        if ep:
-            if current is not None:
-                current["end_idx"] = i - 1
-                episodes.append(current)
-            current = {**ep, "start_idx": i, "end_idx": None, "word_count": 0}
-        elif current is not None:
-            current["word_count"] += len(para.text.split())
-
-    if current is not None:
-        current["end_idx"] = len(paras) - 1
-        episodes.append(current)
+    for i, boundary in enumerate(boundaries):
+        # Preserve front matter in the first output and trailing material in the
+        # last output. Across a complete split, no document-body element is lost.
+        start_idx = 0 if i == 0 else boundary["boundary_idx"]
+        end_idx = (
+            boundaries[i + 1]["boundary_idx"] - 1
+            if i + 1 < len(boundaries)
+            else last_content_idx
+        )
+        word_count = sum(
+            len(body_child_text(children[j]).split())
+            for j in range(start_idx, end_idx + 1)
+            if children[j].tag != qn("w:sectPr")
+        )
+        episodes.append(
+            {
+                "number": boundary["number"],
+                "title": boundary["title"],
+                "heading": boundary["heading"],
+                "start_idx": start_idx,
+                "end_idx": end_idx,
+                "word_count": word_count,
+            }
+        )
 
     total_words = sum(e["word_count"] for e in episodes)
     stats = {
@@ -105,50 +175,23 @@ def analyse_docx(doc_path: str) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────
-# DOCX writing
+# DOCX writing — trim a clone of the original package
 # ─────────────────────────────────────────────────────────────
-def copy_paragraph(src_para, dest_doc):
-    new_para = dest_doc.add_paragraph()
-    try:
-        sn = src_para.style.name
-        if sn in [s.name for s in dest_doc.styles]:
-            new_para.style = dest_doc.styles[sn]
-    except Exception:
-        pass
-    try:
-        if src_para.paragraph_format.alignment is not None:
-            new_para.paragraph_format.alignment = src_para.paragraph_format.alignment
-    except Exception:
-        pass
-    for run in src_para.runs:
-        nr = new_para.add_run(run.text)
-        try:
-            nr.bold = run.bold
-            nr.italic = run.italic
-            nr.underline = run.underline
-            if run.font.size:
-                nr.font.size = run.font.size
-            if run.font.name:
-                nr.font.name = run.font.name
-            if run.font.color and run.font.color.type:
-                nr.font.color.rgb = run.font.color.rgb
-        except Exception:
-            pass
-    return new_para
-
-
 def build_docx(src_path: str, episodes: list[dict], ep_indices: list[int], out_path: str):
-    src = Document(src_path)
-    all_paras = src.paragraphs
-    new_doc = Document()
-    # Remove default blank paragraph
-    for p in new_doc.paragraphs:
-        p._element.getparent().remove(p._element)
-
+    new_doc = Document(src_path)
+    body = new_doc.element.body
+    children = list(body.iterchildren())
     first = episodes[ep_indices[0]]["start_idx"]
     last = episodes[ep_indices[-1]]["end_idx"]
-    for para in all_paras[first: last + 1]:
-        copy_paragraph(para, new_doc)
+
+    # Remove only whole body elements outside the selected range. Included XML
+    # nodes and all related package parts remain untouched, preserving tables,
+    # drawings, styles, hyperlinks, page breaks, headers, and footers.
+    for i, child in enumerate(children):
+        if child.tag == qn("w:sectPr"):
+            continue
+        if i < first or i > last:
+            body.remove(child)
     new_doc.save(out_path)
 
 
